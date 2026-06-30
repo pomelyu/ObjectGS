@@ -51,6 +51,7 @@ class GaussianModel(BasicModel):
         self.spatial_lr_scale = 0
         self.padding =  0.0
         self.ape_code = -1
+        self._semantic_cache = None
         self.setup_functions()
 
         if self.color_attr == "RGB":     
@@ -166,7 +167,9 @@ class GaussianModel(BasicModel):
     
     @property
     def get_semantic(self):
-        return self.id_encoder.transform(self.label_ids.squeeze())
+        if self._semantic_cache is None:
+            self._semantic_cache = self.id_encoder.transform(self.label_ids.squeeze())
+        return self._semantic_cache
 
     @property
     def get_rotation(self):
@@ -478,6 +481,7 @@ class GaussianModel(BasicModel):
                 temp_label_ids = self.label_ids.repeat([1, self.n_offsets]).view(-1, 1)[candidate_mask]
                 temp_label_ids = scatter_max(temp_label_ids, inverse_indices.unsqueeze(1), dim=0)[0][remove_duplicates]
                 self.label_ids = torch.cat([self.label_ids, temp_label_ids], dim=0)
+                self._semantic_cache = None
 
                 temp_anchor_demon = torch.cat([self.anchor_demon, torch.zeros([candidate_anchor.shape[0], 1], device='cuda').float()], dim=0)
                 del self.anchor_demon
@@ -521,6 +525,7 @@ class GaussianModel(BasicModel):
         self._rotation = optimizable_tensors["rotation"]
 
         self.label_ids = self.label_ids[valid_points_mask]
+        self._semantic_cache = None
 
         return mask
 
