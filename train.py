@@ -195,12 +195,30 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
             #             object_loss += l1_loss(gt_image[gt_object_mask], render_image[gt_object_mask])
             #             object_loss += 1.0 * l1_loss(gt_object_mask.float(), render_alpha)
             # losses["object_loss"] = opt.lambda_object_loss * object_loss
-            gt_object_ids = gaussians.id_encoder.label_to_index(viewpoint_cam.object_mask.cuda()).long()
-            object_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='mean')(semantics.permute(0,3,1,2), gt_object_ids.unsqueeze(0))
-            # object_loss = torch.nn.CrossEntropyLoss(reduction='mean')(semantics.permute(0,3,1,2), gt_object_ids.unsqueeze(0))
+            gt_object_ids = gaussians.id_encoder.label_to_index(viewpoint_cam.object_mask.cuda()).long()  # [H, W]
+            # Decompose class index into four base-4 digits, matching transform() in semantic_utils.py
+            gt_d0 = gt_object_ids // 64                  # [H, W]
+            gt_d1 = (gt_object_ids // 16) % 4
+            gt_d2 = (gt_object_ids //  4) % 4
+            gt_d3 = gt_object_ids % 4
+            # semantics: [1, H, W, 16]; split into four 4-dim segments and permute for CE
+            pred_d0 = semantics[...,  0: 4].permute(0, 3, 1, 2)  # [1, 4, H, W]
+            pred_d1 = semantics[...,  4: 8].permute(0, 3, 1, 2)
+            pred_d2 = semantics[...,  8:12].permute(0, 3, 1, 2)
+            pred_d3 = semantics[..., 12:16].permute(0, 3, 1, 2)
+            # Only supervise foreground pixels (class index 0 = background)
+            fg_mask = (gt_object_ids > 0).unsqueeze(0).float()   # [1, H, W]
+            _CE = torch.nn.CrossEntropyLoss(reduction='none')
+            object_loss = (
+                (_CE(pred_d0, gt_d0.unsqueeze(0)) * fg_mask).mean() +
+                (_CE(pred_d1, gt_d1.unsqueeze(0)) * fg_mask).mean() +
+                (_CE(pred_d2, gt_d2.unsqueeze(0)) * fg_mask).mean() +
+                (_CE(pred_d3, gt_d3.unsqueeze(0)) * fg_mask).mean()
+            )
             losses["object_loss"] = opt.lambda_object_loss * object_loss
 
-            prob_zero_class = semantics[..., 0]  
+            # zero_penalty: proxy for background confidence = product of first logits across segments
+            prob_zero_class = semantics[..., 0] * semantics[..., 4] * semantics[..., 8] * semantics[..., 12]
             losses["zero_penalty"] = opt.lambda_zero_penalty * prob_zero_class.mean()
 
         # Sky opacity loss
@@ -572,13 +590,11 @@ if __name__ == "__main__":
 
     if args.test_iterations[0] == -1:
         args.test_iterations = [i for i in range(10000, op.iterations + 1, 10000)]
-        # args.test_iterations = [i for i in range(5000, op.iterations + 1, 5000)]
     if len(args.test_iterations) == 0 or args.test_iterations[-1] != op.iterations:
         args.test_iterations.append(op.iterations)
 
     if args.save_iterations[0] == -1:
         args.save_iterations = [i for i in range(10000, op.iterations + 1, 10000)]
-        # args.save_iterations = [i for i in range(5000, op.iterations + 1, 5000)]
     if len(args.save_iterations) == 0 or args.save_iterations[-1] != op.iterations:
         args.save_iterations.append(op.iterations)
 

@@ -70,18 +70,42 @@ class OneHotEncoder:
         return self.class_tensor[indices]
 
     def transform(self, labels):
-        """Convert class labels to one-hot encoded vectors."""
+        """Convert class labels to factored one-hot vectors (four 4-dim vectors, total 16-dim).
+
+        Class index k is base-4 encoded as (k//64, k//16%4, k//4%4, k%4),
+        supporting up to 256 classes with 4^4 combinations.
+        """
         if self.class_tensor is None:
             raise ValueError("OneHotEncoder has not been fitted with labels.")
 
-        mapped_labels = self.label_to_index(labels)  # Convert labels to indices
-        one_hot_labels = torch.nn.functional.one_hot(mapped_labels, num_classes=len(self.class_tensor)).to(labels.device)
+        k = self.label_to_index(labels)  # [N], values in [0, num_classes)
+        d0 = k // 64        # most significant base-4 digit
+        d1 = (k // 16) % 4
+        d2 = (k //  4) % 4
+        d3 = k % 4          # least significant base-4 digit
+        F = torch.nn.functional.one_hot
+        return torch.cat([
+            F(d0, num_classes=4).to(labels.device),
+            F(d1, num_classes=4).to(labels.device),
+            F(d2, num_classes=4).to(labels.device),
+            F(d3, num_classes=4).to(labels.device),
+        ], dim=-1)  # [N, 16]
 
-        return one_hot_labels
+    def _decode_indices(self, one_hot_labels):
+        """Decode factored one-hot [*, 16] back to class indices [*]."""
+        d0 = torch.argmax(one_hot_labels[...,  0:4], dim=-1)
+        d1 = torch.argmax(one_hot_labels[...,  4:8], dim=-1)
+        d2 = torch.argmax(one_hot_labels[..., 8:12], dim=-1)
+        d3 = torch.argmax(one_hot_labels[..., 12:16], dim=-1)
+        indices = d0 * 64 + d1 * 16 + d2 * 4 + d3
+        # Out-of-range indices (e.g. background pixels with near-zero semantics)
+        # are clamped to background (index 0).
+        indices[indices >= len(self.class_tensor)] = 0
+        return indices
 
     def inverse_transform(self, one_hot_labels):
-        """Convert one-hot encoded vectors back to class labels."""
-        indices = torch.argmax(one_hot_labels, dim=-1)  # Get the index of the max value
+        """Convert factored one-hot vectors back to class labels."""
+        indices = self._decode_indices(one_hot_labels)
         return self.index_to_label(indices)
 
     def fit_transform(self, labels):
@@ -94,8 +118,7 @@ class OneHotEncoder:
         if self.color_map is None:
             raise ValueError("Color map has not been generated. Please call fit() first.")
 
-        indices = torch.argmax(one_hot_labels, dim=-1)  # Get the index of the max value
-        # Convert label tensor to color tensor
-        color_img = self.color_map[indices.long()]  # Map class IDs to colors
+        indices = self._decode_indices(one_hot_labels)
+        color_img = self.color_map[indices.long()]
         return color_img
 
